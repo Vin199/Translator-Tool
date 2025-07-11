@@ -3,7 +3,7 @@ import { Upload, Download, FileText, CheckCircle, AlertCircle, Loader2 } from 'l
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
 
-const BhashiniTranslationTool = () => {
+const GoogleTranslateAssessmentTool = () => {
   const [file, setFile] = useState(null);
   const [jsonData, setJsonData] = useState(null);
   const [translatedData, setTranslatedData] = useState({});
@@ -12,13 +12,12 @@ const BhashiniTranslationTool = () => {
   const [step, setStep] = useState(1);
   const [selectedLanguages, setSelectedLanguages] = useState([]);
   const [apiConfig] = useState({
-    userID: import.meta.env.VITE_BHASHINI_USER_ID || '',
-    ulcaApiKey: import.meta.env.VITE_BHASHINI_ULCA_API_KEY || '',
-    baseUrl: import.meta.env.VITE_BHASHINI_BASE_URL || 'https://meity-auth.ulcacontrib.org/ulca/apis/v0',
+    apiKey: import.meta.env.VITE_GOOGLE_TRANSLATE_API_KEY || '',
+    baseUrl: 'https://translation.googleapis.com/language/translate/v2'
   });
   const fileInputRef = useRef(null);
 
-  // Supported languages in Bhashini
+  // Google Translate supported Indian languages
   const supportedLanguages = [
     { code: 'hi', name: 'Hindi', native: 'हिंदी' },
     { code: 'bn', name: 'Bengali', native: 'বাংলা' },
@@ -32,6 +31,8 @@ const BhashiniTranslationTool = () => {
     { code: 'or', name: 'Odia', native: 'ଓଡ଼ିଆ' },
     { code: 'as', name: 'Assamese', native: 'অসমীয়া' },
     { code: 'ur', name: 'Urdu', native: 'اردو' },
+    { code: 'ne', name: 'Nepali', native: 'नेपाली' },
+    { code: 'sa', name: 'Sanskrit', native: 'संस्कृत' }
   ];
 
   const handleFileUpload = (event) => {
@@ -80,100 +81,56 @@ const BhashiniTranslationTool = () => {
   };
 
   const handleLanguageSelection = (langCode) => {
-    setSelectedLanguages((prev) => (prev.includes(langCode) ? prev.filter((code) => code !== langCode) : [...prev, langCode]));
+    setSelectedLanguages((prev) => 
+      prev.includes(langCode) 
+        ? prev.filter((code) => code !== langCode) 
+        : [...prev, langCode]
+    );
   };
 
-  // Cache for pipeline configurations to avoid repeated config calls
-  const [pipelineCache, setPipelineCache] = useState({});
-
-  // Batch translation function for better performance
+  // Google Translate batch function
   const translateTextBatch = async (texts, targetLang) => {
-    if (!apiConfig.ulcaApiKey || !apiConfig.userID) {
+    if (!apiConfig.apiKey) {
       return texts.map((text) => `[${targetLang.toUpperCase()}] ${text}`);
     }
 
     try {
-      // Check cache for pipeline config
-      const cacheKey = `translation_${targetLang}`;
-      let callbackUrl = pipelineCache[cacheKey];
-
-      // Get pipeline config if not cached
-      if (!callbackUrl) {
-        const configResponse = await fetch(`${apiConfig.baseUrl}/model/getModelsPipeline`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            userID: apiConfig.userID,
-            ulcaApiKey: apiConfig.ulcaApiKey,
-          },
-          body: JSON.stringify({
-            pipelineTasks: [
-              {
-                taskType: 'translation',
-                config: {
-                  language: {
-                    sourceLanguage: 'en',
-                    targetLanguage: targetLang,
-                  },
-                },
-              },
-            ],
-            pipelineRequestConfig: {
-              pipelineId: '64392f96daac500b55c543cd',
-            },
-          }),
-        });
-
-        if (!configResponse.ok) {
-          throw new Error(`Config failed: ${configResponse.statusText}`);
-        }
-
-        const configResult = await configResponse.json();
-        callbackUrl = configResult.pipelineInferenceAPIEndPoint?.callbackUrl;
-
-        if (!callbackUrl) {
-          throw new Error('No inference endpoint received');
-        }
-
-        // Cache the callback URL
-        setPipelineCache((prev) => ({ ...prev, [cacheKey]: callbackUrl }));
+      // Filter out empty texts
+      const nonEmptyTexts = texts.filter(text => text && text.trim());
+      if (nonEmptyTexts.length === 0) {
+        return texts;
       }
 
-      // Batch translate multiple texts at once
-      const computeResponse = await fetch(callbackUrl, {
+      const response = await fetch(`${apiConfig.baseUrl}?key=${apiConfig.apiKey}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          userID: apiConfig.userID,
-          ulcaApiKey: apiConfig.ulcaApiKey,
         },
         body: JSON.stringify({
-          pipelineTasks: [
-            {
-              taskType: 'translation',
-              config: {
-                language: {
-                  sourceLanguage: 'en',
-                  targetLanguage: targetLang,
-                },
-              },
-            },
-          ],
-          inputData: {
-            input: texts.map((text) => ({ source: text })),
-          },
-        }),
+          q: nonEmptyTexts,
+          target: targetLang,
+          source: 'en',
+          format: 'text'
+        })
       });
 
-      if (!computeResponse.ok) {
-        throw new Error(`Translation failed: ${computeResponse.statusText}`);
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(`Translation failed: ${errorData.error?.message || response.statusText}`);
       }
 
-      const result = await computeResponse.json();
+      const result = await response.json();
+      const translations = result.data.translations;
 
-      // Extract all translated texts
-      const translations = result.pipelineResponse?.[0]?.output || result.output || [];
-      return translations.map((item, index) => item?.target || texts[index]);
+      // Map back to original array with empty texts preserved
+      let translationIndex = 0;
+      return texts.map(text => {
+        if (!text || !text.trim()) {
+          return text;
+        }
+        return translations[translationIndex++]?.translatedText || text;
+      });
+
     } catch (error) {
       console.warn(`Batch translation failed for ${texts.length} texts to ${targetLang}:`, error);
       return texts.map((text) => `[Translation Error: ${text}]`);
@@ -209,14 +166,19 @@ const BhashiniTranslationTool = () => {
           });
         });
 
-        // Batch translate all unique texts at once
-        const BATCH_SIZE = 10; // Process 10 texts at a time to avoid API limits
+        // Batch translate all unique texts - Google Translate can handle larger batches
+        const BATCH_SIZE = 50; // Google Translate can handle more texts per request
         const translatedTexts = [];
 
         for (let i = 0; i < textsToTranslate.length; i += BATCH_SIZE) {
           const batch = textsToTranslate.slice(i, i + BATCH_SIZE);
           const batchResults = await translateTextBatch(batch, langCode);
           translatedTexts.push(...batchResults);
+          
+          // Small delay to respect rate limits
+          if (i + BATCH_SIZE < textsToTranslate.length) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+          }
         }
 
         // Create translation lookup map
@@ -277,11 +239,12 @@ const BhashiniTranslationTool = () => {
     const link = document.createElement('a');
     const url = URL.createObjectURL(blob);
     link.setAttribute('href', url);
-    link.setAttribute('download', `assessment_${langCode}.csv`);
+    link.setAttribute('download', `assessment_${langCode}_translated.csv`);
     link.style.visibility = 'hidden';
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   const copyToClipboard = (langCode) => {
@@ -312,11 +275,15 @@ const BhashiniTranslationTool = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
-      <div className="max-w-6xl mx-auto">
+      <div className={`mx-auto transition-all duration-300 ${
+        step === 4 && Object.keys(translatedData).length > 0 
+          ? 'max-w-none w-full' 
+          : 'max-w-6xl'
+      }`}>
         <div className="bg-white rounded-2xl shadow-xl p-8">
           <div className="text-center mb-8">
             <h1 className="text-3xl font-bold text-gray-900 mb-2">Assessment Translation Tool</h1>
-            <p className="text-gray-600">Upload Excel assessments and translate them into multiple Indian languages</p>
+            <p className="text-gray-600">Upload Excel assessments and translate them into multiple Indian languages using Google Translate</p>
           </div>
 
           {/* Progress Steps */}
@@ -345,13 +312,13 @@ const BhashiniTranslationTool = () => {
           {/* Step 1: File Upload */}
           {step === 1 && (
             <div className="space-y-6">
-              {(!apiConfig.ulcaApiKey || !apiConfig.userID) && (
+              {!apiConfig.apiKey && (
                 <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
                   <h3 className="font-semibold text-orange-800 mb-2">Demo Mode</h3>
                   <p className="text-orange-700 text-sm">
-                    No API credentials found in environment variables. Running in demo mode with mock translations.
+                    No Google Translate API key found in environment variables. Running in demo mode with mock translations.
                     <br />
-                    Add VITE_BHASHINI_USER_ID and VITE_BHASHINI_ULCA_API_KEY to your .env file for real translations.
+                    Add VITE_GOOGLE_TRANSLATE_API_KEY to your .env file for real translations.
                   </p>
                 </div>
               )}
@@ -435,7 +402,7 @@ const BhashiniTranslationTool = () => {
                     'Start Translation'
                   )}
                 </button>
-              </div>
+                </div>
             </div>
           )}
 
@@ -444,7 +411,7 @@ const BhashiniTranslationTool = () => {
             <div className="text-center py-12">
               <Loader2 className="h-12 w-12 text-blue-600 mx-auto mb-4 animate-spin" />
               <h3 className="text-lg font-semibold text-gray-900 mb-2">Translating Content</h3>
-              <p className="text-gray-600">Please wait while we translate your assessment into {selectedLanguages.length} languages...</p>
+              <p className="text-gray-600">Please wait while we translate your assessment into {selectedLanguages.length} languages using Google Translate...</p>
             </div>
           )}
 
@@ -487,11 +454,11 @@ const BhashiniTranslationTool = () => {
                       </div>
 
                       <div className="overflow-x-auto">
-                        <table className="w-full text-sm">
+                        <table className="w-full text-sm border-collapse">
                           <thead>
                             <tr className="bg-gray-50">
                               {data?.headers.map((header, index) => (
-                                <th key={index} className="px-3 py-2 text-left font-medium text-gray-900 border-b">
+                                <th key={index} className="px-3 py-2 text-left font-medium text-gray-900 border-b whitespace-nowrap min-w-[120px]">
                                   {header}
                                 </th>
                               ))}
@@ -501,8 +468,10 @@ const BhashiniTranslationTool = () => {
                             {data?.rows.slice(0, 5).map((row, rowIndex) => (
                               <tr key={rowIndex} className="hover:bg-gray-50">
                                 {data.headers.map((header, colIndex) => (
-                                  <td key={colIndex} className="px-3 py-2 border-b text-gray-700 max-w-xs truncate">
-                                    {row[header] || ''}
+                                  <td key={colIndex} className="px-3 py-2 border-b text-gray-700 whitespace-nowrap min-w-[120px] max-w-[300px]">
+                                    <div className="truncate" title={row[header] || ''}>
+                                      {row[header] || ''}
+                                    </div>
                                   </td>
                                 ))}
                               </tr>
@@ -531,4 +500,4 @@ const BhashiniTranslationTool = () => {
   );
 };
 
-export default BhashiniTranslationTool;
+export default GoogleTranslateAssessmentTool;
