@@ -200,7 +200,7 @@ const GoogleTranslateAssessmentTool = () => {
           });
 
           // Batch translate all unique texts
-          const BATCH_SIZE = 50;
+          const BATCH_SIZE = 100;
           const translatedTexts = [];
 
           for (let i = 0; i < textsToTranslate.length; i += BATCH_SIZE) {
@@ -210,7 +210,7 @@ const GoogleTranslateAssessmentTool = () => {
             
             // Small delay to respect rate limits
             if (i + BATCH_SIZE < textsToTranslate.length) {
-              await new Promise(resolve => setTimeout(resolve, 100));
+              await new Promise(resolve => setTimeout(resolve, 50));
             }
           }
 
