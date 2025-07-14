@@ -199,8 +199,8 @@ const GoogleTranslateAssessmentTool = () => {
             });
           });
 
-          // Batch translate all unique texts
-          const BATCH_SIZE = 100;
+          // Batch translate all unique texts - Optimized for Google's generous limits
+          const BATCH_SIZE = 128; // Increased batch size (Google supports up to 1024)
           const translatedTexts = [];
 
           for (let i = 0; i < textsToTranslate.length; i += BATCH_SIZE) {
@@ -208,9 +208,9 @@ const GoogleTranslateAssessmentTool = () => {
             const batchResults = await translateTextBatch(batch, langCode);
             translatedTexts.push(...batchResults);
             
-            // Small delay to respect rate limits
+            // Minimal delay - we're well within quota limits
             if (i + BATCH_SIZE < textsToTranslate.length) {
-              await new Promise(resolve => setTimeout(resolve, 50));
+              await new Promise(resolve => setTimeout(resolve, 20));
             }
           }
 
@@ -508,7 +508,7 @@ const GoogleTranslateAssessmentTool = () => {
                         </div>
                       </div>
 
-                      {/* Display preview of each sheet */}
+                      {/* Display preview of max 5 sheets */}
                       <div className="space-y-4">
                         {data && Object.entries(data).slice(0, 5).map(([sheetName, sheetData]) => (
                           <div key={sheetName} className="border border-gray-100 rounded-lg p-3">
@@ -553,6 +553,13 @@ const GoogleTranslateAssessmentTool = () => {
                             </div>
                           </div>
                         ))}
+                        {data && Object.keys(data).length > 5 && (
+                          <div className="text-center py-4 text-gray-500 text-sm">
+                            Showing first 5 sheets of {Object.keys(data).length} total sheets.
+                            <br />
+                            Download the Excel file to see all sheets.
+                          </div>
+                        )}
                       </div>
                     </div>
                   );
