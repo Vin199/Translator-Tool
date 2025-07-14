@@ -247,6 +247,60 @@ const GoogleTranslateAssessmentTool = () => {
     URL.revokeObjectURL(url);
   };
 
+  const downloadAllExcel = () => {
+    if (Object.keys(translatedData).length === 0) return;
+
+    const workbook = XLSX.utils.book_new();
+
+    // Add a sheet for each translated language
+    selectedLanguages.forEach((langCode) => {
+      const data = translatedData[langCode];
+      if (!data) return;
+
+      const lang = supportedLanguages.find((l) => l.code === langCode);
+      const sheetName = lang ? `${lang.name} (${lang.code})` : langCode;
+
+      // Convert data to worksheet format
+      const worksheetData = [
+        data.headers,
+        ...data.rows.map((row) => data.headers.map((header) => row[header] || ''))
+      ];
+
+      const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
+      
+      // Add some basic formatting
+      const range = XLSX.utils.decode_range(worksheet['!ref']);
+      for (let col = range.s.c; col <= range.e.c; col++) {
+        const cellAddress = XLSX.utils.encode_cell({ r: 0, c: col });
+        if (worksheet[cellAddress]) {
+          worksheet[cellAddress].s = {
+            font: { bold: true },
+            fill: { fgColor: { rgb: "E2E8F0" } }
+          };
+        }
+      }
+
+      // Set column widths
+      const columnWidths = data.headers.map(() => ({ width: 20 }));
+      worksheet['!cols'] = columnWidths;
+
+      XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+    });
+
+    // Generate and download the Excel file
+    const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+    const blob = new Blob([excelBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', `assessment_all_languages_translated.xlsx`);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   const copyToClipboard = (langCode) => {
     const data = translatedData[langCode];
     if (!data) return;
@@ -426,7 +480,7 @@ const GoogleTranslateAssessmentTool = () => {
                 <p className="text-green-700 text-sm">Your assessment has been successfully translated into {selectedLanguages.length} languages</p>
               </div>
 
-              <div className="grid gap-6">
+              <div className="space-y-6">
                 {selectedLanguages.map((langCode) => {
                   const lang = supportedLanguages.find((l) => l.code === langCode);
                   const data = translatedData[langCode];
@@ -487,9 +541,15 @@ const GoogleTranslateAssessmentTool = () => {
                 })}
               </div>
 
-              <div className="text-center">
+              <div className="flex justify-between items-center">
                 <button onClick={resetTool} className="bg-gray-600 text-white px-6 py-2 rounded-lg hover:bg-gray-700 transition-colors">
                   Translate Another File
+                </button>
+                <button 
+                  onClick={downloadAllExcel}
+                  className="bg-green-600 text-white px-6 py-2 rounded-lg hover:bg-green-700 transition-colors flex items-center">
+                  <Download className="h-4 w-4 mr-2" />
+                  Download All as Excel
                 </button>
               </div>
             </div>
