@@ -57,23 +57,39 @@ const GoogleTranslateAssessmentTool = () => {
       setError('');
       const data = await file.arrayBuffer();
       const workbook = XLSX.read(data, { type: 'array' });
-      const sheetName = workbook.SheetNames[0];
-      const worksheet = workbook.Sheets[sheetName];
-      const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-
-      // Convert to structured format
-      const headers = jsonData[0];
-      const rows = jsonData.slice(1).map((row) => {
-        const obj = {};
-        headers.forEach((header, index) => {
-          obj[header] = row[index] || '';
-        });
-        return obj;
+      
+      // Process all sheets in the workbook
+      const allSheetsData = {};
+      
+      workbook.SheetNames.forEach(sheetName => {
+        const worksheet = workbook.Sheets[sheetName];
+        const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+        
+        if (jsonData.length > 0) {
+          // Filter out null/undefined headers and clean them
+          const rawHeaders = jsonData[0];
+          const headers = rawHeaders.map((header, index) => {
+            if (header === null || header === undefined || header === '') {
+              return `column_${index}`;
+            }
+            return String(header).trim();
+          });
+          
+          const rows = jsonData.slice(1).map((row) => {
+            const obj = {};
+            headers.forEach((header, index) => {
+              obj[header] = row[index] || '';
+            });
+            return obj;
+          });
+          
+          allSheetsData[sheetName] = { headers, rows };
+        }
       });
-
-      setJsonData({ headers, rows });
+      setJsonData(allSheetsData);
       setStep(2);
     } catch (err) {
+      console.error('Error in convertToJSON:', err);
       setError('Error converting Excel to JSON: ' + err.message);
     } finally {
       setLoading(false);
@@ -137,7 +153,7 @@ const GoogleTranslateAssessmentTool = () => {
     }
   };
 
-  // Optimized translation function with parallel processing
+  // Optimized translation function with parallel processing for multi-sheet files
   const translateAssessment = async () => {
     if (!jsonData || selectedLanguages.length === 0) {
       setError('Please upload a file and select languages');
@@ -148,64 +164,86 @@ const GoogleTranslateAssessmentTool = () => {
     setStep(3);
     const translated = {};
 
+    // Columns that need translation
+    const translatableColumns = [
+      'question',
+      'option_a_content', 
+      'option_b_content',
+      'option_c_content',
+      'option_d_content',
+      'correct_feedback',
+      'incorrect_feedback'
+    ];
+
     try {
       // Process all languages in parallel
       const languagePromises = selectedLanguages.map(async (langCode) => {
-        // Collect all unique texts that need translation
-        const textsToTranslate = [];
-        const textIndexMap = new Map();
+        const translatedSheets = {};
 
-        jsonData.rows.forEach((row) => {
-          Object.entries(row).forEach(([, value]) => {
-            if (typeof value === 'string' && value.trim()) {
-              if (!textIndexMap.has(value)) {
-                textIndexMap.set(value, textsToTranslate.length);
-                textsToTranslate.push(value);
+        // Process each sheet
+        for (const [sheetName, sheetData] of Object.entries(jsonData)) {
+          // Collect all unique texts that need translation from translatable columns only
+          const textsToTranslate = [];
+          const textIndexMap = new Map();
+
+          sheetData.rows.forEach((row) => {
+            Object.entries(row).forEach(([key, value]) => {
+              // Only translate specified columns
+              if (translatableColumns.includes(key.toLowerCase()) && 
+                  typeof value === 'string' && value.trim()) {
+                if (!textIndexMap.has(value)) {
+                  textIndexMap.set(value, textsToTranslate.length);
+                  textsToTranslate.push(value);
+                }
               }
-            }
+            });
           });
-        });
 
-        // Batch translate all unique texts - Google Translate can handle larger batches
-        const BATCH_SIZE = 50; // Google Translate can handle more texts per request
-        const translatedTexts = [];
+          // Batch translate all unique texts
+          const BATCH_SIZE = 50;
+          const translatedTexts = [];
 
-        for (let i = 0; i < textsToTranslate.length; i += BATCH_SIZE) {
-          const batch = textsToTranslate.slice(i, i + BATCH_SIZE);
-          const batchResults = await translateTextBatch(batch, langCode);
-          translatedTexts.push(...batchResults);
-          
-          // Small delay to respect rate limits
-          if (i + BATCH_SIZE < textsToTranslate.length) {
-            await new Promise(resolve => setTimeout(resolve, 100));
+          for (let i = 0; i < textsToTranslate.length; i += BATCH_SIZE) {
+            const batch = textsToTranslate.slice(i, i + BATCH_SIZE);
+            const batchResults = await translateTextBatch(batch, langCode);
+            translatedTexts.push(...batchResults);
+            
+            // Small delay to respect rate limits
+            if (i + BATCH_SIZE < textsToTranslate.length) {
+              await new Promise(resolve => setTimeout(resolve, 100));
+            }
           }
-        }
 
-        // Create translation lookup map
-        const translationMap = new Map();
-        textsToTranslate.forEach((originalText, index) => {
-          translationMap.set(originalText, translatedTexts[index]);
-        });
-
-        // Build translated rows using the lookup map
-        const translatedRows = jsonData.rows.map((row) => {
-          const translatedRow = {};
-          Object.entries(row).forEach(([key, value]) => {
-            if (typeof value === 'string' && value.trim()) {
-              translatedRow[key] = translationMap.get(value) || value;
-            } else {
-              translatedRow[key] = value;
-            }
+          // Create translation lookup map
+          const translationMap = new Map();
+          textsToTranslate.forEach((originalText, index) => {
+            translationMap.set(originalText, translatedTexts[index]);
           });
-          return translatedRow;
-        });
+
+          // Build translated rows using the lookup map
+          const translatedRows = sheetData.rows.map((row) => {
+            const translatedRow = {};
+            Object.entries(row).forEach(([key, value]) => {
+              if (translatableColumns.includes(key.toLowerCase()) && 
+                  typeof value === 'string' && value.trim()) {
+                translatedRow[key] = translationMap.get(value) || value;
+              } else {
+                // Keep non-translatable columns as-is
+                translatedRow[key] = value;
+              }
+            });
+            return translatedRow;
+          });
+
+          translatedSheets[sheetName] = {
+            headers: [...sheetData.headers],
+            rows: translatedRows,
+          };
+        }
 
         return {
           langCode,
-          data: {
-            headers: [...jsonData.headers],
-            rows: translatedRows,
-          },
+          data: translatedSheets,
         };
       });
 
@@ -226,91 +264,47 @@ const GoogleTranslateAssessmentTool = () => {
     }
   };
 
-  const downloadCSV = (langCode) => {
+  const downloadExcel = (langCode) => {
     const data = translatedData[langCode];
     if (!data) return;
 
-    const csv = Papa.unparse({
-      fields: data.headers,
-      data: data.rows.map((row) => data.headers.map((header) => row[header] || '')),
-    });
-
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    const url = URL.createObjectURL(blob);
-    link.setAttribute('href', url);
-    link.setAttribute('download', `assessment_${langCode}_translated.csv`);
-    link.style.visibility = 'hidden';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
-
-  const downloadAllExcel = () => {
-    if (Object.keys(translatedData).length === 0) return;
-
+    // Create a new workbook
     const workbook = XLSX.utils.book_new();
 
-    // Add a sheet for each translated language
-    selectedLanguages.forEach((langCode) => {
-      const data = translatedData[langCode];
-      if (!data) return;
-
-      const lang = supportedLanguages.find((l) => l.code === langCode);
-      const sheetName = lang ? `${lang.name} (${lang.code})` : langCode;
-
+    // Add each sheet to the workbook
+    Object.entries(data).forEach(([sheetName, sheetData]) => {
       // Convert data to worksheet format
       const worksheetData = [
-        data.headers,
-        ...data.rows.map((row) => data.headers.map((header) => row[header] || ''))
+        sheetData.headers, // Header row
+        ...sheetData.rows.map(row => sheetData.headers.map(header => row[header] || ''))
       ];
-
-      const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
       
-      // Add some basic formatting
-      const range = XLSX.utils.decode_range(worksheet['!ref']);
-      for (let col = range.s.c; col <= range.e.c; col++) {
-        const cellAddress = XLSX.utils.encode_cell({ r: 0, c: col });
-        if (worksheet[cellAddress]) {
-          worksheet[cellAddress].s = {
-            font: { bold: true },
-            fill: { fgColor: { rgb: "E2E8F0" } }
-          };
-        }
-      }
-
-      // Set column widths
-      const columnWidths = data.headers.map(() => ({ width: 20 }));
-      worksheet['!cols'] = columnWidths;
-
+      const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
       XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
     });
 
-    // Generate and download the Excel file
-    const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
-    const blob = new Blob([excelBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-    const link = document.createElement('a');
-    const url = URL.createObjectURL(blob);
-    link.setAttribute('href', url);
-    link.setAttribute('download', `assessment_all_languages_translated.xlsx`);
-    link.style.visibility = 'hidden';
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+    // Generate Excel file and download
+    const languageName = supportedLanguages.find(l => l.code === langCode)?.name || langCode;
+    const fileName = `${languageName}_translation.xlsx`;
+    XLSX.writeFile(workbook, fileName);
   };
 
   const copyToClipboard = (langCode) => {
     const data = translatedData[langCode];
     if (!data) return;
 
-    const csv = Papa.unparse({
-      fields: data.headers,
-      data: data.rows.map((row) => data.headers.map((header) => row[header] || '')),
+    // Create a combined text with all sheets
+    let combinedText = '';
+    Object.entries(data).forEach(([sheetName, sheetData]) => {
+      combinedText += `\n=== ${sheetName} ===\n`;
+      const csv = Papa.unparse({
+        fields: sheetData.headers,
+        data: sheetData.rows.map((row) => sheetData.headers.map((header) => row[header] || '')),
+      });
+      combinedText += csv + '\n';
     });
 
-    navigator.clipboard.writeText(csv).then(() => {
+    navigator.clipboard.writeText(combinedText).then(() => {
       alert(`${supportedLanguages.find((l) => l.code === langCode)?.name} data copied to clipboard!`);
     });
   };
@@ -411,8 +405,15 @@ const GoogleTranslateAssessmentTool = () => {
                   <h3 className="font-semibold text-green-800">File Processed Successfully</h3>
                 </div>
                 <p className="text-green-700 text-sm">
-                  Found {jsonData.rows.length} rows with {jsonData.headers.length} columns
+                  Found {Object.keys(jsonData).length} sheets with a total of{' '}
+                  {Object.values(jsonData).reduce((total, sheet) => total + sheet.rows.length, 0)} rows
                 </p>
+                <div className="mt-2 text-xs text-green-600">
+                  <strong>Sheets:</strong> {Object.keys(jsonData).join(', ')}
+                </div>
+                <div className="mt-1 text-xs text-green-600">
+                  <strong>Translatable columns:</strong> question, option_a_content, option_b_content, option_c_content, option_d_content, correct_feedback, incorrect_feedback
+                </div>
               </div>
 
               <div>
@@ -493,10 +494,10 @@ const GoogleTranslateAssessmentTool = () => {
                         </h4>
                         <div className="flex space-x-2">
                           <button
-                            onClick={() => downloadCSV(langCode)}
+                            onClick={() => downloadExcel(langCode)}
                             className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors flex items-center text-sm">
                             <Download className="h-4 w-4 mr-1" />
-                            Download CSV
+                            Download Excel
                           </button>
                           <button
                             onClick={() => copyToClipboard(langCode)}
@@ -507,49 +508,60 @@ const GoogleTranslateAssessmentTool = () => {
                         </div>
                       </div>
 
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-sm border-collapse">
-                          <thead>
-                            <tr className="bg-gray-50">
-                              {data?.headers.map((header, index) => (
-                                <th key={index} className="px-3 py-2 text-left font-medium text-gray-900 border-b whitespace-nowrap min-w-[120px]">
-                                  {header}
-                                </th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {data?.rows.slice(0, 5).map((row, rowIndex) => (
-                              <tr key={rowIndex} className="hover:bg-gray-50">
-                                {data.headers.map((header, colIndex) => (
-                                  <td key={colIndex} className="px-3 py-2 border-b text-gray-700 whitespace-nowrap min-w-[120px] max-w-[300px]">
-                                    <div className="truncate" title={row[header] || ''}>
-                                      {row[header] || ''}
-                                    </div>
-                                  </td>
-                                ))}
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                        {data?.rows.length > 5 && (
-                          <p className="text-sm text-gray-500 mt-2 text-center">Showing first 5 rows of {data.rows.length} total rows</p>
-                        )}
+                      {/* Display preview of each sheet */}
+                      <div className="space-y-4">
+                        {data && Object.entries(data).slice(0, 5).map(([sheetName, sheetData]) => (
+                          <div key={sheetName} className="border border-gray-100 rounded-lg p-3">
+                            <h5 className="font-medium text-gray-800 mb-2">Sheet: {sheetName}</h5>
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-sm border-collapse">
+                                <thead>
+                                  <tr className="bg-gray-50">
+                                    {sheetData?.headers?.slice(0, 6).map((header, index) => (
+                                      <th key={index} className="px-3 py-2 text-left font-medium text-gray-900 border-b whitespace-nowrap min-w-[120px]">
+                                        {header}
+                                      </th>
+                                    ))}
+                                    {sheetData?.headers && sheetData.headers.length > 6 && (
+                                      <th className="px-3 py-2 text-left font-medium text-gray-900 border-b">
+                                        ... +{sheetData.headers.length - 6} more
+                                      </th>
+                                    )}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {sheetData?.rows?.slice(0, 3).map((row, rowIndex) => (
+                                    <tr key={rowIndex} className="hover:bg-gray-50">
+                                      {sheetData.headers?.slice(0, 6).map((header, colIndex) => (
+                                        <td key={colIndex} className="px-3 py-2 border-b text-gray-700 whitespace-nowrap min-w-[120px] max-w-[200px]">
+                                          <div className="truncate" title={row[header] || ''}>
+                                            {row[header] || ''}
+                                          </div>
+                                        </td>
+                                      ))}
+                                      {sheetData?.headers && sheetData.headers.length > 6 && (
+                                        <td className="px-3 py-2 border-b text-gray-500">...</td>
+                                      )}
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                              <p className="text-sm text-gray-500 mt-2 text-center">
+                                Showing first 3 rows of {sheetData?.rows?.length || 0} total rows
+                                {sheetData?.headers && sheetData.headers.length > 6 && ` | Showing 6 of ${sheetData.headers.length} columns`}
+                              </p>
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     </div>
                   );
                 })}
               </div>
 
-              <div className="flex justify-between items-center">
+              <div className="text-center">
                 <button onClick={resetTool} className="bg-gray-600 text-white px-6 py-2 rounded-lg hover:bg-gray-700 transition-colors">
                   Translate Another File
-                </button>
-                <button 
-                  onClick={downloadAllExcel}
-                  className="bg-green-600 text-white px-6 py-2 rounded-lg hover:bg-green-700 transition-colors flex items-center">
-                  <Download className="h-4 w-4 mr-2" />
-                  Download All as Excel
                 </button>
               </div>
             </div>
