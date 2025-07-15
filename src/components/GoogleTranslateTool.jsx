@@ -2,6 +2,7 @@ import React, { useState, useRef } from 'react';
 import { Upload, Download, FileText, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import Papa from 'papaparse';
+import iprepLogo from "../assets/iPrep-logo.svg";
 
 const GoogleTranslateAssessmentTool = () => {
   const [file, setFile] = useState(null);
@@ -329,8 +330,11 @@ const GoogleTranslateAssessmentTool = () => {
           : 'max-w-6xl'
       }`}>
         <div className="bg-white rounded-2xl shadow-xl p-8">
+          <div className="flex justify-center items-center">
+            <img src={iprepLogo} alt="iDream Logo" className='max-w-48' />
+          </div>
           <div className="text-center mb-8">
-            <h1 className="text-3xl font-bold text-gray-900 mb-2">Assessment Translation Tool</h1>
+            <h1 className="text-3xl font-bold text-gray-900 mb-2">iDream Translation Tool For Content Translation</h1>
             <p className="text-gray-600">Upload Excel assessments and translate them into multiple Indian languages using Google Translate</p>
           </div>
 
